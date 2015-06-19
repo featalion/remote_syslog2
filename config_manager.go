@@ -304,7 +304,7 @@ func (cm *ConfigManager) DebugLogFile() string {
 	case cm.Flags.DebugLogFile != "":
 		return cm.Flags.DebugLogFile
 	default:
-		return "/dev/null"
+		return os.DevNull
 	}
 }
 

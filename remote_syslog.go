@@ -7,21 +7,24 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/ActiveState/tail"
+	"github.com/VividCortex/godaemon"
 	"github.com/howbazaar/loggo"
 	"github.com/papertrail/remote_syslog2/syslog"
 	"github.com/papertrail/remote_syslog2/utils"
 )
 
 var log = loggo.GetLogger("")
+var backTty *os.File
 
 // Tails a single file
 func tailOne(file string, excludePatterns []*regexp.Regexp, logger *syslog.Logger, wr *WorkerRegistry, severity syslog.Priority, facility syslog.Priority, poll bool) {
 	defer wr.Remove(file)
 	wr.Add(file)
-  tailConfig := tail.Config{ReOpen: true, Follow: true, MustExist: true, Poll: poll, Location: &tail.SeekInfo{0, os.SEEK_END}}
+	tailConfig := tail.Config{ReOpen: true, Follow: true, MustExist: true, Poll: poll, Location: &tail.SeekInfo{0, os.SEEK_END}}
 
 	t, err := tail.TailFile(file, tailConfig)
 
@@ -110,7 +113,17 @@ func main() {
 	cm := NewConfigManager()
 
 	if cm.Daemonize() {
-		utils.Daemonize(cm.DebugLogFile(), cm.PidFile())
+		dbgLog := cm.DebugLogFile()
+		// Proxy terminal's stderr, when daemonize without debug log file
+		if (dbgLog == "" || dbgLog == os.DevNull) && godaemon.Stage() == godaemon.StageParent {
+			backTty = os.Stderr
+			err := syscall.Flock(int(backTty.Fd()), syscall.LOCK_EX)
+			if err != nil {
+				log.Criticalf("Cannot lock parent stderr: %s", err.Error())
+				os.Exit(1)
+			}
+		}
+		utils.Daemonize(dbgLog, cm.PidFile(), backTty)
 	}
 
 	loggo.ConfigureLoggers(cm.LogLevels())
@@ -125,6 +138,12 @@ func main() {
 	}
 
 	go tailFiles(cm.Files(), cm.ExcludeFiles(), cm.ExcludePatterns(), cm.RefreshInterval(), logger, cm.Severity(), cm.Facility(), cm.Poll())
+
+	if backTty != nil {
+		syscall.Flock(int(backTty.Fd()), syscall.LOCK_UN)
+		backTty.Close()
+		backTty = nil
+	}
 
 	for err = range logger.Errors {
 		log.Errorf("Syslog error: %v", err)

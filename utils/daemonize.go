@@ -15,7 +15,6 @@ import (
 const CanDaemonize = true
 
 func ResolvePath(path string) string {
-
 	if filepath.IsAbs(path) {
 		return path
 	}
@@ -23,8 +22,7 @@ func ResolvePath(path string) string {
 	return filepath.Join(os.Getenv("__DAEMON_CWD"), path)
 }
 
-func Daemonize(logFilePath, pidFilePath string) {
-
+func Daemonize(logFilePath, pidFilePath string, backTty *os.File) {
 	if os.Getenv("__DAEMON_CWD") == "" {
 		cwd, err := os.Getwd()
 		if err != nil {
@@ -40,18 +38,21 @@ func Daemonize(logFilePath, pidFilePath string) {
 		os.Exit(1)
 	}
 
-	stdout, stderr, err := godaemon.MakeDaemon(&godaemon.DaemonAttr{CaptureOutput: true})
+	stdout, stderr, err := godaemon.MakeDaemon(&godaemon.DaemonAttr{CaptureOutput: true, Files: []**os.File{&backTty}})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Could not Daemonize: %v", err)
 		os.Exit(1)
 	}
 
-	go func() {
-		io.Copy(logFile, stdout)
-	}()
-	go func() {
-		io.Copy(logFile, stderr)
-	}()
+	proxyOutputFn := func(rd io.Reader) {
+		if backTty != nil {
+			io.Copy(backTty, rd)
+		} else {
+			io.Copy(logFile, rd)
+		}
+	}
+	go proxyOutputFn(stdout)
+	go proxyOutputFn(stderr)
 
 	lock, err := lockfile.New(pidFilePath)
 	err = lock.TryLock()
